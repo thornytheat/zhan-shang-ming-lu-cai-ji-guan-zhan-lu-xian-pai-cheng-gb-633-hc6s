@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from ... import config, errors, reasons
-from . import paging, reader
+from . import paging, reader, snapshot as snapshot_mod
 
 SOURCE_LABELS = config.SOURCE_ALIASES
 
@@ -15,6 +15,18 @@ def make_fetcher(settings, *, offline: bool = True):
     if offline:
         return reader.FileFetcher(settings.sample_site_dir, base=settings.sample_site_base)
     return reader.HttpFetcher(settings.sample_site_base, timeout=settings.http_timeout)
+
+
+def make_resume_fetcher(settings, store, batch_id: str):
+    """续跑用 fetcher：包一层该批次冻结快照，命中的页不重新抓取。"""
+    base = make_fetcher(settings)
+    snapshots = store.load_snapshots(batch_id)
+    return snapshot_mod.SnapshotFetcher(base, snapshots), snapshots
+
+
+def freeze_snapshots(bundle: paging.Bundle) -> list:
+    """采信后把每页原始字节与契约版本冻结成快照。"""
+    return [snapshot_mod.snapshot_from_page(page) for page in bundle.pages]
 
 
 def select_sources(source: str | None) -> tuple[dict, ...]:
@@ -51,6 +63,8 @@ def page_rows(bundle: paging.Bundle) -> list[dict]:
             "bytes": page.bytes, "sha256": page.sha256,
             "row_count": page.row_count, "code": code,
             "note": page.note,
+            "contract_version": getattr(page, "contract_version", "") or "",
+            "from_snapshot": bool(getattr(page, "from_snapshot", False)),
         })
     return rows
 

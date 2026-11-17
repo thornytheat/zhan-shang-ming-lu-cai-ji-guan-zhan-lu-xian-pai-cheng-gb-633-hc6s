@@ -55,6 +55,10 @@ REASONS = {
     "S_NO_TABLE": _r(
         "S_NO_TABLE", INFO, "catalog",
         "页面不含名录表格，跳过", "首页与导航页属正常跳过"),
+    "S_SNAPSHOT_RESUME": _r(
+        "S_SNAPSHOT_RESUME", INFO, "catalog",
+        "续跑复用批次冻结的采集原文，未重新抓取在线页面",
+        "列契约与原始字节按批次冻结，在线页面改版不影响本批次"),
     # ---- M2 展位解析 ----
     "Q_COLUMN_COUNT": _r(
         "Q_COLUMN_COUNT", ERROR, "booth",
@@ -86,6 +90,26 @@ REASONS = {
     "Q_DUP_BOOTH": _r(
         "Q_DUP_BOOTH", WARN, "booth",
         "同一个展位号被两家展商占用", "疑似合展或录入串行，需回源"),
+    "Q_SCHEMA_MISSING_SPLIT": _r(
+        "Q_SCHEMA_MISSING_SPLIT", ERROR, "booth",
+        "改版后名录缺 馆/排/位 拆分列，整页拒收",
+        "新采集要求拆分三列齐全；该页按当时表头判定，缺列不解析任何数据行"),
+    "Q_SPLIT_EMPTY_PART": _r(
+        "Q_SPLIT_EMPTY_PART", ERROR, "booth",
+        "拆分列（馆/排/位）存在空值哨兵", "三列都是必填编码，不能猜"),
+    "Q_SPLIT_BAD_HALL": _r(
+        "Q_SPLIT_BAD_HALL", ERROR, "booth",
+        "拆分列的馆号不在 8 馆平面表内", "核对馆写法，新增馆需先补平面坐标"),
+    "Q_SPLIT_BAD_PART": _r(
+        "Q_SPLIT_BAD_PART", ERROR, "booth",
+        "拆分列的排/位不是 1–3 位数字", "排/位按字符串保形，非数字不解析"),
+    "Q_SPLIT_CONFLICT": _r(
+        "Q_SPLIT_CONFLICT", ERROR, "booth",
+        "拆分列与展位号整列指向不同展位，整行隔离",
+        "两写冲突不取舍，原值全部保留在证据里，回源确认以哪份为准"),
+    "Q_SPLIT_HALL_MISMATCH": _r(
+        "Q_SPLIT_HALL_MISMATCH", ERROR, "booth",
+        "展馆列与拆分列的馆号不一致", "以拆分列为准并记原值，需回源确认"),
     # ---- M3 时间窗 ----
     "T_BAD_TIME": _r(
         "T_BAD_TIME", ERROR, "windows",

@@ -77,6 +77,33 @@
 </div>
 
 <div class="gridwrap">
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">冻结采集原文（列契约随批次固化，续跑只读不重抓）</span>
+      <span class="panel-sub">{{ snapshot_rows|length }} 页</span></div>
+    <div class="panel-body flush">
+      <table class="grid">
+        {{ ui.gridhead(["来源", "页", "状态", "列契约", "编码", "字节", "sha256"], evidence=False) }}
+        <tbody>
+          {% for s in snapshot_rows %}
+          <tr>
+            <td class="cell mono" tabindex="0">{{ s.source }}</td>
+            <td class="cell num" tabindex="0">{{ s.page_no }}</td>
+            <td class="cell" tabindex="0">{{ s.status }}</td>
+            <td class="cell code" tabindex="0">{{ s.contract_version or '—' }}</td>
+            <td class="cell mono" tabindex="0">{{ s.encoding or '—' }}</td>
+            <td class="cell num" tabindex="0">{{ s.bytes }}</td>
+            <td class="cell mono" tabindex="0" title="{{ s.sha256 }}">{{ (s.sha256 or '')[:16] }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" class="empty">该批次没有冻结快照。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="gridwrap">
   <table class="grid">
     {{ ui.gridhead(["指标", "值"], evidence=False) }}
     <tbody>

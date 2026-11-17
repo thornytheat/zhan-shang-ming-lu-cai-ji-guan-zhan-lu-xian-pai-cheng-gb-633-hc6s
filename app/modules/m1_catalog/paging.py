@@ -12,6 +12,7 @@ import io
 from dataclasses import dataclass, field
 
 from ... import config, reasons
+from ..m2_booth import contract, schema
 from . import decode, reader
 
 FOOTER_NEXT_HINTS = ("下一页", "下页", "next page", "&raquo;")
@@ -58,6 +59,11 @@ def normalize_path(href: str, current: str) -> str:
 
 def fetch_page(fetcher, path: str, *, source: str, kind: str, page_no: int) -> tuple:
     fetched = fetcher.get(path)
+    # \u5feb\u7167\u6062\u590d\u9875\u5df2\u6309\u51bb\u7ed3\u5b57\u8282\u5b8c\u6574\u89e3\u7801/\u89e3\u6790\uff0c\u76f4\u63a5\u6cbf\u7528\uff0c\u4e0d\u505a\u7b2c\u4e8c\u6b21\u6293\u53d6\u4e0e\u89e3\u6790
+    if getattr(fetched, "from_snapshot", False):
+        if "S_SNAPSHOT_RESUME" not in fetched.codes:
+            fetched.codes = list(dict.fromkeys([*fetched.codes, "S_SNAPSHOT_RESUME"]))
+        return fetched, fetched.codes
     fetched.source = source
     fetched.kind = kind
     fetched.page_no = page_no
@@ -87,6 +93,7 @@ def fetch_page(fetcher, path: str, *, source: str, kind: str, page_no: int) -> t
                 fetched.header and fetched.header[0].startswith("\ufeff")):
             codes.append("S_BOM_STRIPPED")
         fetched.codes = _dedupe(codes)
+        _freeze_version(fetched)
         return fetched, fetched.codes
 
     reader.parse_html(fetched)
@@ -98,7 +105,23 @@ def fetch_page(fetcher, path: str, *, source: str, kind: str, page_no: int) -> t
     if fetched.dup_headers:
         codes.append("S_DUP_HEADER")
     fetched.codes = _dedupe(codes)
+    _freeze_version(fetched)
     return fetched, fetched.codes
+
+
+def _freeze_version(fetched: reader.Fetched) -> None:
+    """\u6309\u91c7\u4fe1\u5f53\u65f6\u7684\u8868\u5934\u51bb\u7ed3\u5217\u5951\u7ea6\u7248\u672c\uff08v1 \u6574\u5217 / v2 \u62c6\u5206\uff09\u3002
+
+    \u4e00\u65e6\u5199\u5165\u5c31\u968f\u6279\u6b21\u4e0e\u5feb\u7167\u4fdd\u5b58\uff0c\u7eed\u8dd1\u6cbf\u7528\u8be5\u503c\uff0c\u5728\u7ebf\u9875\u9762\u6539\u7248\u4e0d\u5f71\u54cd\u672c\u6279\u6b21\u3002
+    \u8ba4\u4e0d\u51fa\u62c6\u5206\u5217\u65f6\u9ed8\u8ba4 v1\uff08\u6539\u7248\u524d\u5951\u7ea6\uff09\uff0c\u4fdd\u8bc1\u7248\u672c\u6c38\u4e0d\u4e3a\u7a7a\u3002
+    """
+    if fetched.contract_version:
+        return
+    if fetched.header:
+        fetched.contract_version = contract.map_header(
+            fetched.header).get("version") or schema.SCHEMA_V1
+    else:
+        fetched.contract_version = schema.SCHEMA_V1
 
 
 def parse_csv(text: str) -> tuple[list[str], list[list[str]], bool]:

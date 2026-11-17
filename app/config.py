@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHINA_TZ = dt.timezone(dt.timedelta(hours=8), "Asia/Shanghai")
 UTC = dt.timezone.utc
 
-RULE_VERSION = "boothplan/1.2.0"
+RULE_VERSION = "boothplan/1.3.0"
 DIST_QUANT = Decimal("0.1")
 DIST_UNIT = "米"
 
@@ -100,9 +100,14 @@ AREA_SPEC_RE = r"(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)"
 MAX_PAGES_PER_SOURCE = 8
 
 # 名录列契约（列名 → 语义）。旧名映射用于 schema 演进。
+# v1（2026-11 改版前）：展位号整列 booth_raw；
+# v2（改版后）：展位号拆成 hall_col / row_col / col_col 三列，booth_raw 可留作原写法。
 COLUMNS = (
     ("exhibitor_name", "展商名称", "text", "必填，去首尾空格，同名不同馆进冲突表"),
-    ("booth_raw", "展位号", "text", "必填，保留原写法，另存归一后的 booth_code"),
+    ("booth_raw", "展位号", "text", "v1 必填；保留原写法，另存归一后的 booth_code"),
+    ("hall_col", "馆", "text", "v2 必填，拆分列；与展位号整列冲突即整行隔离"),
+    ("row_col", "排", "text", "v2 必填，拆分列；字符串保形，前导零保留"),
+    ("col_col", "位", "text", "v2 必填，拆分列；字符串保形，前导零保留"),
     ("hall_raw", "展馆", "text", "可空，与展位号里的馆交叉校验"),
     ("area_sqm", "展位面积(㎡)", "decimal", "可空，Decimal 1 位"),
     ("visit_priority", "拜访优先级", "int", "可空，1 最高；空值按 5 处理但不计入合计"),
@@ -113,6 +118,12 @@ COLUMN_ALIASES = {
     "展商名称": "exhibitor_name", "企业名称": "exhibitor_name",
     "公司名称": "exhibitor_name", "展商": "exhibitor_name",
     "展位号": "booth_raw", "展位编号": "booth_raw", "坐标": "booth_raw",
+    # v2 拆分列别名（“展位号”下月起拆成 馆/排/位）。
+    # 注意：“馆号/展馆/展厅”是 v1 旧名，仍归 hall_raw，不能挪给拆分列，
+    # 否则改版前失败批次续跑会换列义。
+    "馆": "hall_col", "展位馆": "hall_col", "所属馆": "hall_col",
+    "排": "row_col", "排号": "row_col", "展位排": "row_col",
+    "位": "col_col", "位号": "col_col", "展位位": "col_col",
     "展馆": "hall_raw", "馆号": "hall_raw", "展厅": "hall_raw",
     "展位面积": "area_sqm", "面积(㎡)": "area_sqm", "面积": "area_sqm",
     "面积㎡": "area_sqm",

@@ -5,19 +5,34 @@ from fastapi import APIRouter, Depends, Request
 
 from ... import config, errors, reasons
 from ...web import Ctx, get_ctx, render
-from . import contract, parse, service
+from . import contract, parse, schema, service
 
 router = APIRouter(tags=["M2 展位解析"])
 
 
 @router.get("/api/contract")
 def api_contract(ctx: Ctx = Depends(get_ctx)) -> dict:
+    batch = ctx.current_batch()
+    page_versions: list[dict] = []
+    if batch is not None:
+        for page in ctx.store.load_pages(batch["batch_id"]):
+            page_versions.append({
+                "url": page["url"], "source": page["source"],
+                "page_no": page["page_no"],
+                "contract_version": page.get("contract_version") or "—",
+                "from_snapshot": bool(page.get("from_snapshot")),
+            })
     return {
         "rule_version": ctx.settings.rule_version,
+        "schema_versions": schema.schema_rows(),
         "columns": contract.column_contract(),
+        "columns_v1": contract.column_contract(schema.SCHEMA_V1),
+        "columns_v2": contract.column_contract(schema.SCHEMA_V2),
         "required": list(contract.REQUIRED),
+        "required_v2": list(schema.V2_REQUIRED),
         "evolution": contract.evolution_table(),
         "grammar": parse.grammar_payload(),
+        "batch_contract": page_versions,
         "halls": [
             {"id": key, "name": hall["name"], "zone": hall["zone"],
              "x": str(hall["x"]), "y": str(hall["y"])}
@@ -43,11 +58,18 @@ def page_exhibitors(request: Request, batch_id: str | None = None,
     records: list[dict] = []
     issues: list[dict] = []
     summary = {"records": 0, "ok": 0, "unplaced": 0, "dup": 0}
+    page_contract: list[dict] = []
     if batch is not None:
         bid = batch["batch_id"]
         records = ctx.store.load_exhibitors(bid)
         issues = [i for i in ctx.store.load_issues(bid) if i["stage"] == "booth"]
         summary = service.summary(records, issues)
+        page_contract = [
+            {"url": p["url"], "source": p["source"], "page_no": p["page_no"],
+             "contract_version": p.get("contract_version") or "—",
+             "from_snapshot": bool(p.get("from_snapshot"))}
+            for p in ctx.store.load_pages(bid)
+        ]
     rows = service.rows_for_page(records)
     if hall:
         rows = [r for r in rows if r["hall"] == hall]
@@ -57,8 +79,11 @@ def page_exhibitors(request: Request, batch_id: str | None = None,
                   rows=rows, summary=summary, issues=issues, hall=hall, status=status,
                   status_options=[(k, v) for k, v in service.STATUS_LABELS.items()],
                   grammar=parse.grammar_payload(),
-                  grid_cols=["馆", "展商", "展位号", "排", "位", "x(m)", "y(m)",
-                              "面积(㎡)", "优先级", "对接人", "状态"],
+                  page_contract=page_contract,
+                  schema_versions=schema.schema_rows(),
+                  grid_cols=["契约", "取值", "馆", "展商", "展位号", "拆分馆", "排",
+                              "位", "x(m)", "y(m)", "面积(㎡)", "优先级", "对接人",
+                              "状态"],
                   page_title="展商网格")
 
 

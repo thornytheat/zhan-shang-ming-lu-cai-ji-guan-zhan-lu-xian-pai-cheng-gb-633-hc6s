@@ -75,13 +75,14 @@ def api_crawl_status(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
 
 @router.post("/api/crawl/{batch_id}/retry")
 def api_retry(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
-    """失败阶段重试：能续跑就复用已采信页面，否则按新批次重跑。"""
+    """失败阶段重试：能续跑就复用冻结的已采页面，否则按新批次重跑。"""
     plan = batch_service.plan(ctx.store, batch_id)
-    fetcher = service.make_fetcher(ctx.settings)
     if plan["can_resume"]:
+        # 不传 fetcher：resume_batch 自动包一层批次快照，已采页面不重抓
         result = batch_service.resume_batch(settings=ctx.settings, store=ctx.store,
-                                           batch_id=batch_id, fetcher=fetcher)
+                                           batch_id=batch_id)
     else:
+        fetcher = service.make_fetcher(ctx.settings)
         batch = ctx.store.get_batch(batch_id)
         params = json.loads((batch or {}).get("params_json") or "{}")
         result = batch_service.run(settings=ctx.settings, store=ctx.store,

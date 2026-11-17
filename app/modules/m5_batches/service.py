@@ -45,6 +45,11 @@ def run(*, settings, store, source: str = "all", fetcher=None,
         return {"status": "failed", "batch": batch, "stages": [],
                 "failed_stage": "catalog", "error": str(exc), "totals": {}}
 
+    # 采信成功即冻结采集原文与列契约：后续阶段失败、在线页面改版都不影响续跑。
+    # 先删后插在单事务里，重试不产生重复快照。
+    snapshots = catalog_service.freeze_snapshots(bundle)
+    store.save_snapshots(batch_id, snapshots)
+
     digest = manifest.digest_parts(bundle.input_digest_parts)
     batch["input_digest"] = digest
     batch["batch_key"] = key_for(source, digest)
@@ -142,12 +147,19 @@ def run(*, settings, store, source: str = "all", fetcher=None,
 
 def resume_batch(*, settings, store, batch_id: str, fetcher=None,
                  submitted_version: int | None = None) -> dict:
-    """断点续跑：校验版本后按同一来源重跑，版本号 +1。"""
+    """断点续跑：校验版本后按同一来源重跑，版本号 +1。
+
+    优先用原批次冻结的采集原文快照构造 fetcher：已采信页面不重新抓取，
+    在线页面即便改版也按当时列义处理原始行，不会更换展商。
+    """
     batch = store.get_batch(batch_id)
     if batch is None:
         raise errors.NotFound(f"批次 {batch_id} 不存在", code="E_NOT_FOUND")
     guard(store, batch_id, submitted_version)
     params = json.loads(batch.get("params_json") or "{}")
+    if fetcher is None:
+        fetcher, _snapshots = catalog_service.make_resume_fetcher(
+            settings, store, batch_id)
     result = run(settings=settings, store=store,
                  source=params.get("source", "all"), fetcher=fetcher,
                  resume_of=batch_id, mode="resume")

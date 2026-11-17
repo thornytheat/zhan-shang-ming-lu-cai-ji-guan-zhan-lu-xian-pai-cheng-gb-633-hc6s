@@ -7,6 +7,7 @@
   <span>无坐标 <b>{{ summary.unplaced }}</b></span>
   <span>同名冲突 <b>{{ summary.dup }}</b></span>
   <span>馆数 <b>{{ summary.halls }}</b></span>
+  <span>拆分列来源 <b>{{ summary.from_split or 0 }}</b></span>
   <span class="unit">共 {{ rows|length }} 行</span>
 </div>
 
@@ -33,28 +34,54 @@
   <a class="note" href="/exhibitors">清空</a>
 </form>
 
+<div class="panel">
+  <div class="panel-head"><span class="panel-title">本批次冻结的列契约（随批次固化，在线改版不影响）</span>
+    <span class="panel-sub">{{ page_contract|length }} 页</span></div>
+  <div class="panel-body flush">
+    <table class="grid">
+      {{ ui.gridhead(["来源", "页", "契约版本", "是否快照恢复", "页面 URL"], evidence=False) }}
+      <tbody>
+        {% for c in page_contract %}
+        <tr>
+          <td class="cell mono" tabindex="0">{{ c.source }}</td>
+          <td class="cell num" tabindex="0">{{ c.page_no }}</td>
+          <td class="cell code" tabindex="0">{{ c.contract_version }}</td>
+          <td class="cell" tabindex="0">{% if c.from_snapshot %}<span class="tag warn">快照</span>{% else %}在线采信{% endif %}</td>
+          <td class="cell mono" tabindex="0" title="{{ c.url }}">{{ c.url|short(40) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="empty">还没有批次。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <div class="gridwrap tall">
   <table class="grid" id="grid-main">
     {{ ui.gridhead(grid_cols) }}
     <tbody>
       {% for r in rows %}
       <tr class="{% if r.status != 'ok' %}is-bad{% endif %}">
+        <td class="cell code" tabindex="0">{{ r.contract_version }}</td>
+        <td class="cell" tabindex="0">{{ r.booth_source_label }}</td>
         <td class="cell mono" tabindex="0">{{ r.hall or '—' }}</td>
         <td class="cell" tabindex="0" title="{{ r.name }}" data-sort="{{ r.name }}">{{ r.name }}</td>
-        <td class="cell mono" tabindex="0">{{ r.booth }}</td>
-        <td class="cell num" tabindex="0">{{ r.row_no }}</td>
-        <td class="cell num" tabindex="0">{{ r.col_no }}</td>
+        <td class="cell mono" tabindex="0" title="{{ r.note }}">{{ r.booth }}</td>
+        <td class="cell mono" tabindex="0">{{ r.hall_col }}</td>
+        <td class="cell num" tabindex="0">{{ r.row_col }}</td>
+        <td class="cell num" tabindex="0">{{ r.col_col }}</td>
         <td class="cell num" tabindex="0" data-sort="{{ r.x_m if r.x_m is not none else -1 }}">{{ r.x_m|meter }}</td>
         <td class="cell num" tabindex="0" data-sort="{{ r.y_m if r.y_m is not none else -1 }}">{{ r.y_m|meter }}</td>
         <td class="cell num" tabindex="0">{{ r.area|sqm }}</td>
         <td class="cell num" tabindex="0" data-sort="{{ r.priority }}">{{ r.priority }}</td>
         <td class="cell" tabindex="0">{{ r.owner or '—' }}</td>
         <td class="cell" tabindex="0"><span class="tag {{ 'ok' if r.status == 'ok' else 'bad' }}">{{ r.status_label }}</span></td>
-        <td class="cell code" tabindex="0" title="{{ r.note }}">{{ r.code }}</td>
+        <td class="cell code" tabindex="0">{{ r.code }}</td>
         <td class="cell mono" tabindex="0">{{ r.row_ref }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="14" class="empty">还没有展商，先跑一次采集。</td></tr>
+      <tr><td colspan="17" class="empty">还没有展商，先跑一次采集。</td></tr>
       {% endfor %}
     </tbody>
   </table>

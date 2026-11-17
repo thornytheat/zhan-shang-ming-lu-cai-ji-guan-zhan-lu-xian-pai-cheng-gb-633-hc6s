@@ -51,7 +51,9 @@ def build(*, run_id: str, batch_id: str, batch_key_value: str, settings, source:
         "input_digest": input_digest,
         "inputs": [
             {"url": p["url"], "status": p["status"], "bytes": p.get("bytes"),
-             "sha256": p.get("sha256"), "encoding": p.get("encoding")}
+             "sha256": p.get("sha256"), "encoding": p.get("encoding"),
+             "contract_version": p.get("contract_version", ""),
+             "from_snapshot": p.get("from_snapshot", False)}
             for p in pages
         ],
         "params": params,

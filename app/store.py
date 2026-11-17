@@ -75,7 +75,28 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+-- 采集原文快照：采信后按批次冻结原始字节与列契约版本，续跑只读不重抓
+CREATE TABLE IF NOT EXISTS page_snapshots (
+    batch_id TEXT NOT NULL, url TEXT NOT NULL, source TEXT NOT NULL,
+    kind TEXT NOT NULL, page_no INTEGER NOT NULL, status TEXT NOT NULL,
+    sha256 TEXT NOT NULL, declared_charset TEXT, encoding TEXT,
+    header_json TEXT NOT NULL DEFAULT '[]', contract_version TEXT NOT NULL DEFAULT '',
+    raw_bytes BLOB NOT NULL,
+    PRIMARY KEY (batch_id, url)
+);
 """
+
+# 旧库平滑升级：已存在的库没有 1.3.0 新增列，用 ALTER 补列，
+# 历史批次的新列为空/默认值，绝不动旧数据（已有成功批次的排程不变）。
+_MIGRATIONS = (
+    "ALTER TABLE pages ADD COLUMN contract_version TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE pages ADD COLUMN from_snapshot INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE exhibitors ADD COLUMN contract_version TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE exhibitors ADD COLUMN booth_source TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE exhibitors ADD COLUMN hall_col TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE exhibitors ADD COLUMN row_col TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE exhibitors ADD COLUMN col_col TEXT NOT NULL DEFAULT ''",
+)
 
 
 class Store:
@@ -84,6 +105,28 @@ class Store:
         Path(self.path).resolve().parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    def _migrate(self, conn) -> None:
+        """给旧库补 1.3.0 新增列；列已存在时跳过，不删不改任何旧数据。"""
+        existing = {
+            row["name"] for row in conn.execute(
+                "SELECT name FROM pragma_table_info('exhibitors')")
+        }
+        existing_pages = {
+            row["name"] for row in conn.execute(
+                "SELECT name FROM pragma_table_info('pages')")
+        }
+        targets = {
+            "pages": existing_pages,
+            "exhibitors": existing,
+        }
+        for statement in _MIGRATIONS:
+            tokens = statement.split()
+            table = tokens[2]          # ALTER TABLE <table> ADD COLUMN <col> ...
+            column = tokens[5]
+            if column not in targets.get(table, set()):
+                conn.execute(statement)
 
     @contextmanager
     def connect(self):
@@ -167,23 +210,29 @@ class Store:
             for p in pages:
                 conn.execute(
                     """INSERT INTO pages (batch_id,url,source,kind,page_no,status,
-                        declared_charset,encoding,bytes,sha256,row_count,code,note)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        declared_charset,encoding,bytes,sha256,row_count,code,note,
+                        contract_version,from_snapshot)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (bid, p["url"], p["source"], p["kind"], p["page_no"], p["status"],
                      p.get("declared_charset"), p.get("encoding"), p.get("bytes"),
                      p.get("sha256"), p.get("row_count", 0), p.get("code"),
-                     p.get("note", "")))
+                     p.get("note", ""), p.get("contract_version", ""),
+                     1 if p.get("from_snapshot") else 0))
             for e in exhibitors:
                 conn.execute(
                     """INSERT INTO exhibitors (batch_id,ex_id,name,hall,booth_raw,
                         booth_code,row_no,col_no,x_m,y_m,area_sqm,priority,owner,status,
-                        code,source_url,row_ref,note)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        code,source_url,row_ref,note,contract_version,booth_source,
+                        hall_col,row_col,col_col)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (bid, e["ex_id"], e["name"], e["hall"], e["booth_raw"],
                      e["booth_code"], e.get("row_no"), e.get("col_no"),
                      _s(e.get("x_m")), _s(e.get("y_m")), _s(e.get("area_sqm")),
                      e.get("priority", 5), e.get("owner", ""), e["status"],
-                     e.get("code"), e["source_url"], e["row_ref"], e.get("note", "")))
+                     e.get("code"), e["source_url"], e["row_ref"], e.get("note", ""),
+                     e.get("contract_version", ""), e.get("booth_source", ""),
+                     e.get("hall_col", ""), e.get("row_col", ""),
+                     e.get("col_col", "")))
             for f in forums:
                 conn.execute(
                     """INSERT INTO forums (batch_id,session_id,title,hall,start_utc,
@@ -261,12 +310,13 @@ class Store:
             for p in pages:
                 conn.execute(
                     """INSERT INTO pages (batch_id,url,source,kind,page_no,status,
-                        declared_charset,encoding,bytes,sha256,row_count,code,note)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (bid, p["url"], p["source"], p["kind"], p["page_no"], p["status"],
+                        declared_charset,encoding,bytes,sha256,row_count,code,note,
+                        contract_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (p["url"], p["source"], p["kind"], p["page_no"], p["status"],
                      p.get("declared_charset"), p.get("encoding"), p.get("bytes"),
                      p.get("sha256"), p.get("row_count", 0), p.get("code"),
-                     p.get("note", "")))
+                     p.get("note", ""), p.get("contract_version", "")))
             for s in stages:
                 conn.execute(
                     """INSERT INTO stages (batch_id,stage,label,in_count,out_count,
@@ -278,9 +328,21 @@ class Store:
 
     # ---------- 读取 ----------
     def load_pages(self, batch_id: str) -> list[dict]:
-        return self._all(
+        from app.modules.m2_booth import schema
+
+        rows = self._all(
             "SELECT * FROM pages WHERE batch_id=? ORDER BY source, page_no, url",
             (batch_id,))
+        # 历史快照可能没冻结版本（1.2 时期数据），按 v1 回落，不改旧行原值
+        snapshots = self.load_snapshots(batch_id)
+        for row in rows:
+            row["from_snapshot"] = bool(row.get("from_snapshot"))
+            if not row.get("contract_version"):
+                snap = snapshots.get(row["url"])
+                row["contract_version"] = (
+                    snap.contract_version if snap is not None and snap.contract_version
+                    else schema.SCHEMA_V1)
+        return rows
 
     def load_exhibitors(self, batch_id: str) -> list[dict]:
         rows = self._all(
@@ -334,6 +396,56 @@ class Store:
                     f"SELECT COUNT(*) AS n FROM {table} WHERE batch_id=?", (batch_id,)
                 ).fetchone()["n"]
         return out
+
+    # ---------- 采集原文快照（按批次冻结，续跑只读） ----------
+    def save_snapshots(self, batch_id: str, snapshots: list) -> None:
+        """采信后冻结快照；单事务先删后插，失败整体回滚。"""
+        from app.modules.m1_catalog.snapshot import Snapshot  # 避免循环导入
+
+        rows = [s for s in snapshots if isinstance(s, Snapshot)]
+        with self.connect() as conn:
+            conn.execute("DELETE FROM page_snapshots WHERE batch_id=?", (batch_id,))
+            for s in rows:
+                conn.execute(
+                    """INSERT INTO page_snapshots (batch_id,url,source,kind,page_no,
+                        status,sha256,declared_charset,encoding,header_json,
+                        contract_version,raw_bytes)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (batch_id, s.url, s.source, s.kind, s.page_no, s.status, s.sha256,
+                     s.declared_charset, s.encoding,
+                     json.dumps(s.header, ensure_ascii=False),
+                     s.contract_version, sqlite3.Binary(s.raw)))
+
+    def load_snapshots(self, batch_id: str) -> dict:
+        """返回 {url: Snapshot}，供 SnapshotFetcher 续跑时还原。"""
+        from app.modules.m1_catalog.snapshot import Snapshot
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM page_snapshots WHERE batch_id=? ORDER BY page_no, url",
+                (batch_id,)).fetchall()
+        out = {}
+        for row in rows:
+            raw = bytes(row["raw_bytes"]) if row["raw_bytes"] is not None else b""
+            snapshot = Snapshot(
+                url=row["url"], source=row["source"], kind=row["kind"],
+                page_no=row["page_no"], raw=raw, sha256=row["sha256"],
+                declared_charset=row["declared_charset"], encoding=row["encoding"],
+                header=json.loads(row["header_json"] or "[]"),
+                contract_version=row["contract_version"] or "",
+                status=row["status"])
+            out[snapshot.url] = snapshot
+        return out
+
+    def snapshot_rows(self, batch_id: str) -> list[dict]:
+        """页面展示用：每页冻结的原文与列契约版本。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT url,source,kind,page_no,status,sha256,encoding,"
+                "header_json,contract_version,length(raw_bytes) AS bytes "
+                "FROM page_snapshots WHERE batch_id=? ORDER BY source,page_no,url",
+                (batch_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     def _all(self, sql: str, args: tuple) -> list[dict]:
         with self.connect() as conn:

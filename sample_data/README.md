@@ -14,4 +14,11 @@
 | `sample_site/exhibitors_export.csv` | 名录导出件 | 首列表头带 U+FEFF、列数不齐、全角展位号、面积写"约 24"、末行截断 |
 | `excerpt.csv` | 上述名录的字段摘录，10 行 | 只用于核对列名，不参与跑批 |
 
+## 改版后拆分列样例（v2 契约）
+
+`tests/fixtures/v2_site/` 是主办方下月改版后的离线样例：展位号整列拆成
+`馆 / 排 / 位` 三列（部分行仍保留展位号整列）。它是测试夹具，不参与主流程跑批，
+专门验证：缺拆分列整页拒收、拆列与整列冲突隔离、前导零保形、冻结契约续跑。
+期望值固定在 `tests/test_schema_evolution.py`。
+
 期望值固定在 `tests/fixtures/expected.py`，改了样例就要同步改期望值。

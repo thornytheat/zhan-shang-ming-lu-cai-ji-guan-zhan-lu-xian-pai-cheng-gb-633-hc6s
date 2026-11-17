@@ -37,6 +37,11 @@
 | TRAP-23 | 09:30-10:30 与 10:30-11:15 相邻场次 | 两端都算，重复计入冲突 | 左闭右开 `[start, end)` | `app/modules/m3_windows/windows.py:112` | `tests/test_windows.py::test_half_open_endpoints_touch_not_overlap` |
 | TRAP-27 | 时间放得下，但当天跨馆已到上限 | 报成 P_NO_SLOT（当天排满），提高其他时段也没用 | 上限与时间分开判：先看时间能不能放，再看跨馆次数，超限给 M7_HALL_CAP | `app/modules/m7_alternate/service.py` | `tests/test_m7_alternate.py::test_hall_cap_reported_not_no_slot` |
 | TRAP-28 | 二层扶梯单向，A2→B2 比 B2→A2 少 60 米 | 按对称距离算，2-opt 增量公式把反向也算成同样的米数 | 距离函数带方向，逐段相加；全馆两两核验，不相等的对单独列出 | `app/modules/m7_alternate/directed.py` | `tests/test_m7_alternate.py::test_one_way_bridge_detected_as_asymmetric` |
+| TRAP-31 | 主办方把“展位号”整列拆成 馆/排/位，改版前失败批次续跑撞上在线新表头 | 续跑按在线 v2 表头解析旧行，整列展位号被当拆列，展商被换掉 | 列契约 v1/v2 在采信时按表头冻结，随批次与采集原文入库；续跑只读快照沿用当时列义 | `app/modules/m2_booth/schema.py` `app/modules/m1_catalog/snapshot.py` | `tests/test_schema_evolution.py::test_resume_after_failure_keeps_original_exhibitors` |
+| TRAP-32 | 新采集名录缺拆分列（只有 馆/排，缺 位） | 按缺省列补空继续解析，产出错误展位 | v2 必填三列，缺任一整页拒收 `Q_SCHEMA_MISSING_SPLIT`，不解析数据行 | `app/modules/m2_booth/service.py` | `tests/test_schema_evolution.py::test_new_crawl_rejects_catalog_missing_split_columns` |
+| TRAP-33 | 同一行既有拆分三列又留展位号整列，两写不一致 | 静默取其中一个，对错无据可查 | 整行隔离 `Q_SPLIT_CONFLICT`，两写不取舍，原值全保留，来源 URL/行号进证据 | `app/modules/m2_booth/split.py` `app/modules/m2_booth/service.py` | `tests/test_schema_evolution.py::test_v2_build_from_fixture_site` |
+| TRAP-34 | 拆分列排/位写 `03`、`05` | `int()` 化后前导零丢失，对不上平面图 | 排/位一律字符串保形，`keep_leading_zero` 补零不转 int | `app/modules/m2_booth/split.py` | `tests/test_schema_evolution.py::test_split_parse_keeps_leading_zeros` |
+| TRAP-35 | 失败后续跑重新抓在线页面，页面已改版 | 同一批次两次解析的输入不同，结果漂移、重复入库 | 采信后冻结 `page_snapshots`，`SnapshotFetcher` 命中快照不重抓，先删后插不重复 | `app/modules/m1_catalog/snapshot.py` `app/store.py` | `tests/test_schema_evolution.py::test_snapshot_fetcher_does_not_refetch` |
 
 ## 对账规则
 
@@ -66,6 +71,8 @@
 | 对账 | 四账，见上 | `POST /api/plans` 的 reconciliation |
 | 运行清单 | run_id、输入 sha256、规则版本、参数、阶段耗时 | `GET /api/export/manifest.csv` |
 | 原子性 | 一次运行先删后插、单事务；失败只写批次与阶段 | `app/store.py:148` |
+| 列契约冻结 | 采信时按表头冻结 v1/v2 列义与采集原文（字节、表头、编码、sha256），续跑只读快照不重抓，在线改版不更换展商 | `app/modules/m1_catalog/snapshot.py`、`GET /api/batches/{id}/snapshots`、`/exhibitors` 列契约面板 |
+| 拆分列隔离 | 拆列与整列冲突整行隔离保留来源，前导零字符串保形 | `tests/test_schema_evolution.py` |
 | 记忆上限 | 按页读、按页解析，不整站读入 | `app/modules/m1_catalog/paging.py:96` |
 | 备选方案 | 同一批候选三套取舍，权重守恒，跨馆次数有上限 | `GET /api/alternate` 的 `invariant` 与 `comparison` |
 

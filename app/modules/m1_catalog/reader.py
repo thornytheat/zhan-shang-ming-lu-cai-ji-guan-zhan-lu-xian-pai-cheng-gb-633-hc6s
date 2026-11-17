@@ -48,6 +48,11 @@ class Fetched:
     next_link: str | None = None
     note: str = ""
     codes: list[str] = field(default_factory=list)
+    # 列契约版本在展位解析阶段按表头冻结（v1 整列 / v2 馆排位拆分），
+    # 随批次入库；续跑沿用同一版本，不随在线页面改版而变。
+    contract_version: str = ""
+    # 该页是否来自批次冻结快照（续跑时为 True，未重新抓在线页面）
+    from_snapshot: bool = False
 
     @property
     def bytes(self) -> int:

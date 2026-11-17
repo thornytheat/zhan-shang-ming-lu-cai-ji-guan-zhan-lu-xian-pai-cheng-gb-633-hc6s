@@ -29,13 +29,15 @@
 
 <div class="gridwrap tall">
   <table class="grid">
-    {{ ui.gridhead(["来源", "页", "状态", "声明编码", "实际编码", "字节", "行数", "sha256", "原因码"]) }}
+    {{ ui.gridhead(["来源", "页", "状态", "列契约", "快照", "声明编码", "实际编码", "字节", "行数", "sha256", "原因码"]) }}
     <tbody>
       {% for p in pages %}
       <tr class="{% if p.status != 'ok' %}is-bad{% endif %}">
         <td class="cell" tabindex="0">{{ p.source }}</td>
         <td class="cell num" tabindex="0">{{ p.page_no }}</td>
         <td class="cell" tabindex="0"><span class="tag {{ 'ok' if p.status == 'ok' else ('warn' if p.status == 'truncated' else 'bad') }}">{{ p.status }}</span></td>
+        <td class="cell code" tabindex="0">{{ p.contract_version or '—' }}</td>
+        <td class="cell" tabindex="0">{% if p.from_snapshot %}<span class="tag warn">冻结</span>{% else %}—{% endif %}</td>
         <td class="cell mono" tabindex="0">{{ p.declared_charset or '—' }}</td>
         <td class="cell mono" tabindex="0">{{ p.encoding or '—' }}</td>
         <td class="cell num" tabindex="0">{{ p.bytes or 0 }}</td>
@@ -44,7 +46,7 @@
         <td class="cell code" tabindex="0">{{ p.code or '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="10" class="empty">还没有页面。</td></tr>
+      <tr><td colspan="12" class="empty">还没有页面。</td></tr>
       {% endfor %}
     </tbody>
   </table>

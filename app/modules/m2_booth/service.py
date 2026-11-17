@@ -10,7 +10,7 @@ import hashlib
 from decimal import Decimal
 
 from ... import config, reasons
-from . import contract, geometry, normalize, parse
+from . import contract, geometry, normalize, parse, schema, split
 
 # 展商状态：ok 可排程；unplaced 有记录但没坐标；isolated 隔离；dup 同名冲突
 STATUS_OK = "ok"
@@ -21,6 +21,10 @@ STATUS_LABELS = {
     STATUS_OK: "可排程", STATUS_UNPLACED: "无坐标",
     STATUS_ISOLATED: "隔离", STATUS_DUP: "同名冲突",
 }
+# 展位取值来源：whole=v1 展位号整列；split=v2 馆/排/位拆分列
+SOURCE_WHOLE = "whole"
+SOURCE_SPLIT = "split"
+SOURCE_LABELS = {SOURCE_WHOLE: "展位号整列", SOURCE_SPLIT: "馆/排/位拆分列"}
 
 
 def issue(code: str, *, stage: str = "booth", subject: str = "",
@@ -48,20 +52,29 @@ def build(pages: list) -> tuple[list[dict], list[dict]]:
         if not page.header:
             continue
         mapping = contract.map_header(page.header)
-        blocked = _page_blocker(mapping)
+        # 以采信时冻结的版本为准；老数据没有冻结值时回落到当前表头检测结果，
+        # 保证改版前已冻结的批次续跑仍按当时列义处理原始行。
+        version = getattr(page, "contract_version", "") or mapping["version"] \
+            or schema.SCHEMA_V1
+        page.contract_version = version
+        blocked = _page_blocker(mapping, version)
         if blocked is not None:
             issues.append(issue(blocked, subject=page.url,
-                                detail=f"{reasons.label(blocked)}（表头缺必需列）",
+                                detail=f"{reasons.label(blocked)}（{schema.SCHEMA_REGISTRY[version]['name']}）",
                                 source_url=page.url,
                                 row_ref=f"{page.source}/p{page.page_no}"))
             continue
         fields = mapping["fields"]
         for index, row in enumerate(page.rows):
             row_ref = f"{page.source}/p{page.page_no}#{index + 2}"
-            record, row_issues = _one_row(page, row, fields, row_ref)
+            if schema.is_split(version):
+                record, row_issues = _one_split_row(page, row, fields, row_ref)
+            else:
+                record, row_issues = _one_row(page, row, fields, row_ref)
             issues.extend(row_issues)
             if record is None:
                 continue
+            record["contract_version"] = version
             _dedupe(record, seen_names, seen_booths, issues)
             exhibitors.append(record)
 
@@ -71,12 +84,19 @@ def build(pages: list) -> tuple[list[dict], list[dict]]:
     return exhibitors, issues
 
 
-def _page_blocker(mapping: dict) -> str | None:
-    if "exhibitor_name" in mapping["missing"]:
+def _page_blocker(mapping: dict, version: str) -> str | None:
+    """按冻结契约版本判定整页是否拒收；新采集缺拆分列直接拒绝。"""
+    missing = schema.missing_required(mapping, version)
+    if not missing:
+        return None
+    if "exhibitor_name" in missing:
         return "Q_MISSING_NAME"
-    if "booth_raw" in mapping["missing"]:
+    if schema.is_split(version):
+        # 改版后名录缺 馆/排/位 拆分列：整页拒收，不解析任何数据行
+        return "Q_SCHEMA_MISSING_SPLIT"
+    if "booth_raw" in missing:
         return "Q_BOOTH_EMPTY"
-    return None
+    return "Q_SCHEMA_MISSING_SPLIT" if schema.is_split(version) else "Q_BOOTH_EMPTY"
 
 
 def _one_row(page, row: list[str], fields: dict, row_ref: str) -> tuple:
@@ -165,6 +185,122 @@ def _one_row(page, row: list[str], fields: dict, row_ref: str) -> tuple:
         "status": status, "code": code,
         "source_url": page.url, "row_ref": row_ref,
         "note": " · ".join(bit for bit in note_bits if bit),
+        "booth_source": SOURCE_WHOLE,
+        "hall_col": "", "row_col": "", "col_col": "",
+        "contract_version": getattr(page, "contract_version", "") or schema.SCHEMA_V1,
+    }
+    return record, issues
+
+
+def _one_split_row(page, row: list[str], fields: dict, row_ref: str) -> tuple:
+    """v2 拆分列路径：馆/排/位 三列独立取值，前导零按字符串保形。"""
+    issues: list[dict] = []
+    width = len(page.header)
+    if len(row) != width:
+        issues.append(issue(
+            "Q_COLUMN_COUNT", subject=page.url, field_name="*",
+            raw_value=f"{len(row)} 列", row_ref=row_ref, source_url=page.url,
+            detail=f"{reasons.label('Q_COLUMN_COUNT')}：表头 {width} 列，本行 {len(row)} 列"))
+        return None, issues
+
+    raw_name = contract.cell(row, fields, "exhibitor_name")
+    name = normalize.clean_text(raw_name)
+    if normalize.is_sentinel(raw_name):
+        issues.append(issue("Q_MISSING_NAME", subject=normalize.clean_text(raw_name) or "（空名称）",
+                            field_name="exhibitor_name", raw_value=raw_name,
+                            row_ref=row_ref, source_url=page.url))
+        return None, issues
+
+    raw_hall_col = contract.cell(row, fields, "hall_col")
+    raw_row_col = contract.cell(row, fields, "row_col")
+    raw_col_col = contract.cell(row, fields, "col_col")
+    parsed = split.parse_split(raw_hall_col, raw_row_col, raw_col_col)
+    if parsed["kind"] == "none":
+        code = parsed["code"] or "Q_BOOTH_UNPARSABLE"
+        issues.append(issue(
+            code, subject=name,
+            field_name=" / ".join(schema.SPLIT_FIELDS),
+            raw_value=f"馆={raw_hall_col or ''} 排={raw_row_col or ''} 位={raw_col_col or ''}",
+            row_ref=row_ref, source_url=page.url))
+        return None, issues
+
+    # 整列 booth_raw 在 v2 退为可空的原写法列；与拆分列冲突则整行隔离，
+    # 两写不取舍，原值全部保留（Q_SPLIT_CONFLICT）。
+    raw_booth = contract.cell(row, fields, "booth_raw")
+    if not normalize.is_sentinel(raw_booth):
+        if not split.whole_matches_split(raw_booth, parsed["booth_code"]):
+            issues.append(issue(
+                "Q_SPLIT_CONFLICT", subject=name, field_name="booth_raw",
+                raw_value=(f"整列 {normalize.clean_text(raw_booth)} vs 拆分 "
+                           f"{parsed['booth_code']}"),
+                row_ref=row_ref, source_url=page.url,
+                detail=("拆分列与展位号整列指向不同展位，整行隔离；"
+                        f"原值：馆={raw_hall_col or ''} 排={raw_row_col or ''} "
+                        f"位={raw_col_col or ''}")))
+            return None, issues
+
+    # 展馆列 hall_raw 与拆分馆列交叉校验，冲突整行隔离
+    raw_hall = contract.cell(row, fields, "hall_raw")
+    hall_from_column = parse.hall_of_raw(raw_hall)
+    if hall_from_column and hall_from_column != parsed["hall"]:
+        issues.append(issue(
+            "Q_SPLIT_HALL_MISMATCH", subject=name, field_name="hall_raw",
+            raw_value=f"展馆列 {raw_hall} / 拆分馆 {parsed['hall']}", row_ref=row_ref,
+            source_url=page.url, detail="展馆列与拆分列馆号冲突，整行隔离"))
+        return None, issues
+
+    hall = parsed["hall"]
+    area = None
+    raw_area = contract.cell(row, fields, "area_sqm")
+    if not normalize.is_sentinel(raw_area):
+        try:
+            area = normalize.parse_decimal(raw_area, field="展位面积")
+        except ValueError as exc:
+            issues.append(issue("Q_BAD_AREA", subject=name, field_name="area_sqm",
+                                raw_value=raw_area, row_ref=row_ref,
+                                source_url=page.url, detail=str(exc)))
+
+    priority = 5
+    raw_priority = contract.cell(row, fields, "visit_priority")
+    note_bits: list[str] = []
+    if not normalize.is_sentinel(raw_priority):
+        try:
+            priority = normalize.parse_int(raw_priority, field="拜访优先级")
+        except ValueError:
+            note_bits.append("优先级无法解析，按 5 处理")
+    note_bits.append(contract.cell(row, fields, "note") or "")
+    if not normalize.is_sentinel(raw_booth):
+        note_bits.append(f"原展位号写法：{normalize.clean_text(raw_booth)}")
+
+    position = geometry.position(hall, parsed["row"], parsed["col"])
+    x_m = y_m = None
+    status = STATUS_OK
+    code = None
+    if position is None:
+        status = STATUS_UNPLACED
+        code = "Q_HALL_UNKNOWN"
+    else:
+        x_m, y_m = position
+
+    record = {
+        "ex_id": ex_id(name, parsed["booth_code"]),
+        "name": name, "hall": hall,
+        # booth_raw 留原写法；没有整列时用拆分拼出的规范写法占位，仍可回源
+        "booth_raw": (normalize.clean_text(raw_booth)
+                      if not normalize.is_sentinel(raw_booth) else parsed["booth_code"]),
+        "booth_code": parsed["booth_code"],
+        "row_no": parsed["row"], "col_no": parsed["col"],
+        "x_m": x_m, "y_m": y_m, "area_sqm": area,
+        "priority": priority,
+        "owner": normalize.clean_text(contract.cell(row, fields, "owner")),
+        "status": status, "code": code,
+        "source_url": page.url, "row_ref": row_ref,
+        "note": " · ".join(bit for bit in note_bits if bit),
+        "booth_source": SOURCE_SPLIT,
+        "hall_col": parsed["parts"]["hall_col"],
+        "row_col": parsed["parts"]["row_col"],
+        "col_col": parsed["parts"]["col_col"],
+        "contract_version": schema.SCHEMA_V2,
     }
     return record, issues
 
@@ -211,6 +347,10 @@ def summary(exhibitors: list[dict], issues: list[dict]) -> dict:
     counts = {}
     for record in exhibitors:
         counts[record["status"]] = counts.get(record["status"], 0) + 1
+    sources = {}
+    for record in exhibitors:
+        key = record.get("booth_source") or SOURCE_WHOLE
+        sources[key] = sources.get(key, 0) + 1
     return {
         "records": len(exhibitors),
         "ok": counts.get(STATUS_OK, 0),
@@ -219,6 +359,8 @@ def summary(exhibitors: list[dict], issues: list[dict]) -> dict:
         "dup": counts.get(STATUS_DUP, 0),
         "issues": len(issues),
         "halls": len({r["hall"] for r in exhibitors if r["hall"]}),
+        "from_whole": sources.get(SOURCE_WHOLE, 0),
+        "from_split": sources.get(SOURCE_SPLIT, 0),
     }
 
 
@@ -235,6 +377,14 @@ def rows_for_page(exhibitors: list[dict]) -> list[dict]:
             "status_label": STATUS_LABELS.get(record["status"], record["status"]),
             "code": record["code"] or "—", "note": record["note"],
             "row_ref": record["row_ref"],
+            "booth_source": record.get("booth_source", SOURCE_WHOLE),
+            "booth_source_label": SOURCE_LABELS.get(
+                record.get("booth_source", SOURCE_WHOLE), "—"),
+            "contract_version": record.get("contract_version", "") or "—",
+            "hall_col": record.get("hall_col", "") or "—",
+            "row_col": record.get("row_col", "") or "—",
+            "col_col": record.get("col_col", "") or "—",
+            "source_url": record["source_url"],
         })
     return rows
 

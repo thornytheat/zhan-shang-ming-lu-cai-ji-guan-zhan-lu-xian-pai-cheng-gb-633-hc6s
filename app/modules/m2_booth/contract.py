@@ -2,13 +2,18 @@
 
 门户经常改列名（"展商" → "企业名称"）、调列序、增列；契约只认语义字段，
 不认列位置，所以列序变了不影响结果。认不出的列登记但不阻断。
+
+改版（boothplan/1.3.0）后展位号拆成 馆/排/位 三列，契约版本的识别与冻结
+在 schema.py；本文件只负责表头 → 语义字段的映射，保持与版本无关。
 """
 from __future__ import annotations
 
 from ... import config
+from . import schema
 from .normalize import clean_text, to_halfwidth
 
-REQUIRED = ("exhibitor_name", "booth_raw")
+# v1 必填集合保留导出，实际必填按 schema.required_for(version) 判定
+REQUIRED = schema.V1_REQUIRED
 
 
 def canonical_key(header_cell: str | None) -> str | None:
@@ -28,7 +33,11 @@ def canonical_key(header_cell: str | None) -> str | None:
 
 
 def map_header(header: list[str] | None) -> dict:
-    """返回 {fields, unmapped, duplicated, missing, bom_removed}。"""
+    """返回 {fields, unmapped, duplicated, missing, bom_removed, width, version}。
+
+    missing 仍按 v1 必填给出（兼容旧调用）；版本化必填请用
+    schema.missing_required(mapping, mapping["version"])。
+    """
     header = list(header or [])
     fields: dict[str, int] = {}
     unmapped: list[str] = []
@@ -43,11 +52,12 @@ def map_header(header: list[str] | None) -> dict:
             duplicated.append(key)
             continue
         fields[key] = index
-    missing = [name for name in REQUIRED if name not in fields]
+    version = schema.detect_version({"fields": fields})
+    missing = schema.missing_required({"fields": fields}, schema.SCHEMA_V1)
     return {
         "fields": fields, "unmapped": unmapped, "duplicated": duplicated,
         "missing": missing, "bom_removed": bom_removed,
-        "width": len(header),
+        "width": len(header), "version": version,
     }
 
 
@@ -58,10 +68,12 @@ def cell(row: list[str], fields: dict, name: str) -> str | None:
     return row[index]
 
 
-def column_contract() -> list[dict]:
+def column_contract(version: str | None = None) -> list[dict]:
+    """列契约目录；version 给定时标注该版本是否必填，否则 required 一律 False。"""
+    required = schema.required_for(version) if version else ()
     return [
         {"field": name, "label": label, "type": kind, "rule": rule,
-         "required": name in REQUIRED}
+         "required": name in required}
         for name, label, kind, rule in config.COLUMNS
     ]
 
